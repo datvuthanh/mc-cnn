@@ -1,7 +1,7 @@
 #! /usr/bin/env luajit
 
 require 'torch'
-
+require 'lfs'
 print('DAT VU')
 
 io.stdout:setvbuf('no')
@@ -11,13 +11,13 @@ end
 io.write('\n')
 dataset = table.remove(arg, 1)
 arch = table.remove(arg, 1)
-assert(dataset == 'kitti' or dataset == 'kitti2015' or dataset == 'mb')
+assert(dataset == 'kitti' or dataset == 'kitti2015' or dataset == 'mb' or dataset == 'datvu_dataset')
 assert(arch == 'fast' or arch == 'slow' or arch == 'ad' or arch == 'census')
 
 cmd = torch.CmdLine()
 cmd:option('-gpu', 1, 'gpu id')
 cmd:option('-seed', 42, 'random seed')
-cmd:option('-debug', false)
+cmd:option('-debug', '')
 cmd:option('-d', 'kitti | mb')
 cmd:option('-a', 'train_tr | train_all | test_te | test_all | submit | time | predict', 'train')
 cmd:option('-net_fname', '')
@@ -28,12 +28,12 @@ cmd:option('-sm_terminate', '', 'terminate the stereo method after this step')
 cmd:option('-sm_skip', '', 'which part of the stereo method to skip')
 cmd:option('-tiny', false)
 cmd:option('-subset', 1)
-
 cmd:option('-left', '')
 cmd:option('-right', '')
 cmd:option('-disp_max', '')
+-- cmd:option('-load_pretrained', false)
 
-if dataset == 'kitti' or dataset == 'kitti2015' then
+if dataset == 'kitti' or dataset == 'kitti2015' or dataset == 'datvu_dataset' then
    cmd:option('-hflip', 0)
    cmd:option('-vflip', 0)
    cmd:option('-rotate', 7)
@@ -49,6 +49,7 @@ if dataset == 'kitti' or dataset == 'kitti2015' then
    cmd:option('-d_hshear', 0)
    cmd:option('-d_brightness', 0.3)
    cmd:option('-d_contrast', 1)
+
 elseif dataset == 'mb' then
    cmd:option('-hflip', 0)
    cmd:option('-vflip', 0)
@@ -463,7 +464,43 @@ if dataset == 'kitti' or dataset == 'kitti2015' then
          tr = fromfile('data.kitti2015/tr.bin')
          te = fromfile('data.kitti2015/te.bin')
          nnz_tr = fromfile('data.kitti2015/nnz_tr.bin')
+         nnz_te  = fromfile('data.kitti2015/nnz_te.bin')
+         -- Dat Vu custom here
+         -- local size = 0
+         -- for i = 1,1 do
+         --    tensor = fromfile('data.patch9x9/dataset_' .. i .. '.bin')
+         --    print("DAT VU TENSOR: ",tensor:size(1))
+         --    size = size + tensor:size(1)
+         -- end   
+         -- print("SIZEEEEEE",size)
+         -- dat_batch = torch.FloatTensor(size,1,9,9)
+         -- index = 1
+         -- print("DAT BATCH: ",dat_batch:size())
+         -- for i = 1,1 do
+         --    tensor = fromfile('data.patch9x9/dataset_' .. i .. '.bin')
+         --    print("DAT VU INDEX: ",index)
+         --    --size = size + tensor:size(1)
+         --    end_point = index + tensor:size(1) -1
+         --    print("END POINT: ",end_point)
+         --    dat_batch[{{index,end_point}}]:copy(tensor)
+         --    index = index + tensor:size(1) --start
+         -- end   
+         leftpos = fromfile('data.patch9x9/leftpos_1.bin')
+         rightpos = fromfile('data.patch9x9/rightpos_1.bin')
+         rightneg = fromfile('data.patch9x9/rightneg_1.bin')
+         
+
+         --custom_dataset = fromfile('data.datvu/dataset.bin')
+      elseif dataset == 'datvu_dataset' then
+         X0 = fromfile('data.kitti2015/x0.bin')
+         X1 = fromfile('data.kitti2015/x1.bin')
+         dispnoc = fromfile('data.kitti2015/dispnoc.bin')
+         metadata = fromfile('data.kitti2015/metadata.bin')
+         tr = fromfile('data.kitti2015/tr.bin')
+         te = fromfile('data.kitti2015/te.bin')
+         nnz_tr = fromfile('data.kitti2015/nnz_tr.bin')
          nnz_te = fromfile('data.kitti2015/nnz_te.bin')
+         --dataset = fromfile('data.datvu/dataset.bin')
       end
    end
 elseif dataset == 'mb' then
@@ -622,10 +659,13 @@ function save_net(epoch)
 end
 
 if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
+
+   -- linear transformation from two matrix A vs B
    function mul32(a,b)
       return {a[1]*b[1]+a[2]*b[4], a[1]*b[2]+a[2]*b[5], a[1]*b[3]+a[2]*b[6]+a[3], a[4]*b[1]+a[5]*b[4], a[4]*b[2]+a[5]*b[5], a[4]*b[3]+a[5]*b[6]+a[6]}
    end
 
+   -- Create patch and augmentation
    function make_patch(src, dst, dim3, dim4, scale, phi, trans, hshear, brightness, contrast)
       local m = {1, 0, -dim4, 0, 1, -dim3}
       m = mul32({1, 0, trans[1], 0, 1, trans[2]}, m) -- translate
@@ -634,7 +674,7 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
       local s = math.sin(phi)
       m = mul32({c, s, 0, -s, c, 0}, m) -- rotate
       m = mul32({1, hshear, 0, 0, 1, 0}, m) -- shear
-      m = mul32({1, 0, (ws - 1) / 2, 0, 1, (ws - 1) / 2}, m)
+      m = mul32({1, 0, (ws - 1) / 2, 0, 1, (ws - 1) / 2}, m) -- resize
       m = torch.FloatTensor(m)
       cv.warp_affine(src, dst, m)
       dst:mul(contrast):add(brightness)
@@ -683,9 +723,11 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
 
    -- network for training
    if arch == 'slow' then
+      -- Dat Vu add load pretrained model
       net_tr = nn.Sequential()
       for i = 1,#fm do
          net_tr:add(cudnn.SpatialConvolution(i == 1 and n_input_plane or fm[i - 1], fm[i], opt.ks, opt.ks))
+         --net_tr:add(cudnn.BatchNormalization(true))
          net_tr:add(cudnn.ReLU(true))
       end
       net_tr:add(nn.Reshape(opt.bs, 2 * fm[#fm]))
@@ -695,6 +737,8 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
       end
       net_tr:add(nn.Linear(opt.nh2, 1))
       net_tr:add(cudnn.Sigmoid(false))
+
+      --net_tr = torch.load('/home/ailab/Desktop/mc-cnn/pretrained_model.t7')
       net_tr:cuda()
       criterion = nn.BCECriterion2():cuda()
 
@@ -791,14 +835,35 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
       end
    end
 
-   ws = get_window_size(net_tr)
-   x_batch_tr = torch.CudaTensor(opt.bs * 2, n_input_plane, ws, ws)
+
+   --if opt.load_pretrained == true then
+
+   --end   
+   ws = get_window_size(net_tr) 
+   x_batch_tr = torch.CudaTensor(opt.bs * 2, n_input_plane, ws, ws) -- (Batch_size*2,1,9,9) (pair)
    y_batch_tr = torch.CudaTensor(opt.bs)
    x_batch_tr_ = torch.FloatTensor(x_batch_tr:size())
    y_batch_tr_ = torch.FloatTensor(y_batch_tr:size())
 
+   --Dat Vu add
+   -- y_train = torch.FloatTensor(custom_dataset:size(1)/2)
+   -- for i=1,y_train:size(1) / 2 do
+   --    y_train[i*2-1] = 0
+   --    y_train[i*2] = 1
+   -- end
+   -- print("Y: ", y_train[1],y_train:size())
+   -- This is my show
    time = sys.clock()
-   for epoch = 1,14 do
+
+   --print("LOAD PRETRAINED MODEL")
+   -- local weights, gradients = net_tr:getParameters()
+   -- pretrained_weights = torch.load('/home/ailab/Desktop/mc-cnn/net/net_kitti2015_slow_-a_train_tr_-l1_4_-fm_256_-l2_4_-nh2_1024.t7', 'ascii')
+   --net_tr:copy(pretrained_weights)
+   -- local pre_weights, pre_grads = pretrained_weights:getParameters()
+   --print(weights)
+   --pre_model = torch.load('/home/ailab/Desktop/mc-cnn/pretrained_model.t7')
+   --net_tr = pre_model:clone('weight', 'bias')
+   for epoch = 1,15 do
       if opt.a == 'time' then
          break
       end
@@ -808,10 +873,12 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
 
       local err_tr = 0
       local err_tr_cnt = 0
-      for t = 1,nnz:size(1) - opt.bs/2,opt.bs/2 do
-         -- print("T: ",t,"SIZE: ",nnz:size(1))
-         -- print('--------------')
-         for i = 1,opt.bs/2 do
+      for t = 1,nnz:size(1) - opt.bs/2,opt.bs/2 do -- Dataset
+      -- for t = 1,leftpos:size(1) - opt.bs/2,opt.bs/2 do -- Dataset
+         -- print("T: ",t," DATA: ",leftpos:size(1))
+         -- print('------------------------')
+         --step = 4
+         for i = 1,opt.bs/2 do -- Batch, step = 4
             d_pos = torch.uniform(-opt.true1, opt.true1)
             d_neg = torch.uniform(opt.false1, opt.false2)
             if torch.uniform() < 0.5 then
@@ -842,13 +909,21 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
             local contrast_ = contrast * torch.uniform(1 / opt.d_contrast, opt.d_contrast)
 
             local ind = perm[t + i - 1]
-            img = nnz[{ind, 1}]
-            dim3 = nnz[{ind, 2}]
-            dim4 = nnz[{ind, 3}]
-            d = nnz[{ind, 4}]
+            img = nnz[{ind, 1}] -- id
+            dim3 = nnz[{ind, 2}] -- y
+            dim4 = nnz[{ind, 3}] -- x
+            d = nnz[{ind, 4}] -- disparity
+            
+            --print("INDEX: ", t + i - 1)
+            --print("IMAGE 0: ", custom_dataset[t+i-1])
+            --print("Dataset: ",dataset:size())
+            --print("NNZ: ",nnz:size())
+            --print("INDEX: ",ind," img: ",img," dim3: ",dim3," dim4: ",dim4, " d: ",d)
+
             if dataset == 'kitti' or dataset == 'kitti2015' then
                x0 = X0[img]
                x1 = X1[img]
+               --print("Left: ",x0:size())
             elseif dataset == 'mb' then
                light = (torch.random() % (#X[img] - 1)) + 2
                exp = (torch.random() % X[img][light]:size(1)) + 1
@@ -864,14 +939,57 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
                x1 = X[img][light_][{exp_,2}]
             end
 
+            --print("I: ",i)
+            local start = t + i - 1
+            -- print("START: ",i)  
+
+            -- make_patch(dat_batch[start], x_batch_tr_[i], 4, 4, scale, phi, trans, hshear, brightness, contrast) -- left_pos - 0
+            -- make_patch(dat_batch[start+1], x_batch_tr_[i+1], 4, 4 , scale_, phi_, trans_, hshear_, brightness_, contrast_) -- right_pos - 1
+            -- make_patch(dat_batch[start+2], x_batch_tr_[i+2], 4, 4, scale, phi, trans, hshear, brightness, contrast) -- left_neg - 2
+            -- make_patch(dat_batch[start+3], x_batch_tr_[i+3], 4, 4, scale_, phi_, trans_, hshear_, brightness_, contrast_) -- right_neg - 3
+
+            --print("D POS: ",d_pos,d_neg)
+
+            -- make_patch(leftpos[start], x_batch_tr_[i * 4 - 3], 4, 5, scale, phi, trans, hshear, brightness, contrast)
+            -- make_patch(rightpos[start], x_batch_tr_[i * 4 - 2], 4, 5,scale_, phi_, trans_, hshear_, brightness_, contrast_)
+            -- make_patch(leftpos[start], x_batch_tr_[i * 4 - 1], 4, 5, scale, phi, trans, hshear, brightness, contrast)
+            -- make_patch(rightneg[start], x_batch_tr_[i * 4 - 0], 4, 5, scale_, phi_, trans_, hshear_, brightness_, contrast_)
+
+            --rand = math.random(70,80)
+            -- x_batch_tr_[i*4-3]:copy(leftpos[start])
+            -- x_batch_tr_[i*4-2]:copy(rightpos[start])
+            -- x_batch_tr_[i*4-1]:copy(leftpos[start])
+            -- x_batch_tr_[i*4-0]:copy(rightneg[start])
+
             make_patch(x0, x_batch_tr_[i * 4 - 3], dim3, dim4, scale, phi, trans, hshear, brightness, contrast)
             make_patch(x1, x_batch_tr_[i * 4 - 2], dim3, dim4 - d + d_pos, scale_, phi_, trans_, hshear_, brightness_, contrast_)
             make_patch(x0, x_batch_tr_[i * 4 - 1], dim3, dim4, scale, phi, trans, hshear, brightness, contrast)
             make_patch(x1, x_batch_tr_[i * 4 - 0], dim3, dim4 - d + d_neg, scale_, phi_, trans_, hshear_, brightness_, contrast_)
 
-            y_batch_tr_[i * 2 - 1] = 0
-            y_batch_tr_[i * 2] = 1
+
+            --print("LEFT POS: ", leftpos[70])
+            --print("RIGHT POS: ", rightpos[70])
+            --print("RIGHT NEG: ", rightneg[70])
+
+            --print("X0",x0)
+            -- print('-----')
+            -- print('TEST BATCH')
+            -- print('Image 1: ',start,' index: ',i*4-3,x_batch_tr_[i*4-3])
+            -- print('Image 2: ',start+1,' index: ',i*4-2,x_batch_tr_[i*4-2])
+            -- print('Image 3: ',start+2,' index: ',i*4-1,x_batch_tr_[i*4-1])
+            -- print('Image 4: ',start+3,' index: ',i*4-0,x_batch_tr_[i*4-0])
+            -- Dat Vu test
+            --print("Train batch size: ", x_batch_tr_:size(),y_batch_tr_:size()) -- 256x1x9x9 (128- pos pair, 128 neg pair)
          end
+         
+         for i =  1, opt.bs/2 do
+            y_batch_tr_[i * 2 - 1] = 0 -- [0 1 0 1 0 1 0 1] 
+            y_batch_tr_[i * 2] = 1
+
+         end
+         --print("DATASET: ",nnz:size(1))         
+         --print("DEMO",custom_dataset[1])
+         --print("Y: ", y_batch_tr_[1],y_batch_tr_[2])
 
          x_batch_tr:copy(x_batch_tr_)
          y_batch_tr:copy(y_batch_tr_)
@@ -881,6 +999,8 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
          end
 
          net_tr:forward(x_batch_tr)
+
+         --print("SIZE: ",x_batch_tr:size(),net_tr.input:size())
          local err = criterion:forward(net_tr.output, y_batch_tr)
          if err >= 0 and err < 100 then
             err_tr = err_tr + err
@@ -888,7 +1008,7 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
          else
             print(('WARNING! err=%f'):format(err))
          end
-         -- print("EPOCH: ",epoch," ERR: ", err_tr / err_tr_cnt, " LR: ", opt.lr, " TIME: ",sys.clock() - time)
+         --print("EPOCH: ",epoch," ERR: ", err_tr / err_tr_cnt, " LR: ", opt.lr, " TIME: ",sys.clock() - time)
 
          criterion:backward(net_tr.output, y_batch_tr)
          net_tr:backward(x_batch_tr, criterion.gradInput)
@@ -902,10 +1022,15 @@ if opt.a == 'train_tr' or opt.a == 'train_all' or opt.a == 'time' then
       if opt.debug then
          save_net(epoch)
       end
-      print(epoch, err_tr / err_tr_cnt, opt.lr, sys.clock() - time)
+      print("EPOCH: ",epoch," ERR: ", err_tr / err_tr_cnt, " LR: ", opt.lr, " TIME: ",sys.clock() - time)
       collectgarbage()
    end
+
+   --torch.save('pretrained_model.t7', net_tr)
+
    opt.net_fname = save_net(0)
+   -- Dat Vu add
+   --
    if opt.a == 'train_tr' then
       opt.a = 'test_te'
    elseif opt.a == 'train_all' then
@@ -1260,7 +1385,7 @@ for _, i in ipairs(examples) do
       pred_good:le(actual, err_at):cmul(mask)
       local err = pred_bad:sum() / mask:sum()
       err_sum = err_sum + err
-      print(runtime, err)
+      print("TIME: ",runtime, "ERROR", err)
 
       if opt.debug then
          local img_pred = torch.Tensor(1, 3, pred:size(3), pred:size(4))

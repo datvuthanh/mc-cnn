@@ -1,9 +1,9 @@
 require 'cutorch'
 require 'image'
 
-d = 70
-h = 370
-w= 1226
+d = 201
+h = 375
+w= 1242
 
 function fromfile(fname)
    local size = io.open(fname):seek('end')

@@ -1909,16 +1909,18 @@ int make_dataset2(lua_State *L)
 
 	int height = THFloatTensor_size(disp_, 2);
 	int width = THFloatTensor_size(disp_, 3);
+
+	
 	int nnz_size = THFloatTensor_nElement(nnz_);
 
 	for (int i = 0; i < height; i++) {
 		for (int j = 0; j < width; j++) {
 			if (disp[i * width + j] > 0.5) {
 				assert(t * 4 + 4 <= nnz_size);
-				nnz[t * 4 + 0] = img;
-				nnz[t * 4 + 1] = i;
-				nnz[t * 4 + 2] = j;
-				nnz[t * 4 + 3] = disp[i * width + j];
+				nnz[t * 4 + 0] = img; //id
+				nnz[t * 4 + 1] = i; // y
+				nnz[t * 4 + 2] = j; // x
+				nnz[t * 4 + 3] = disp[i * width + j]; //disparity
 				t++;
 			}
 		}
